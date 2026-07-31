@@ -1,45 +1,128 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 const useSpeechSynthesis = () => {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [language, setLanguage] = useState("en-IN");
+  const [error, setError] = useState(null);
+  const [voices, setVoices] = useState([]);
+
+  // Load available browser voices
+  useEffect(() => {
+    if (!window.speechSynthesis) {
+      setError("Speech Synthesis not supported in this browser");
+      return;
+    }
+
+    const loadVoices = () => {
+      const availableVoices = window.speechSynthesis.getVoices();
+
+      if (availableVoices.length > 0) {
+        setVoices(availableVoices);
+      }
+    };
+
+    loadVoices();
+
+    window.speechSynthesis.onvoiceschanged = loadVoices;
+
+    return () => {
+      window.speechSynthesis.onvoiceschanged = null;
+    };
+  }, []);
+
+  // Find best matching voice
+  const getBestVoice = useCallback(() => {
+    if (!voices.length) return null;
+
+    // Exact language match
+    let selectedVoice = voices.find(
+      (voice) => voice.lang.toLowerCase() === language.toLowerCase(),
+    );
+
+    // Hindi fallback
+    if (!selectedVoice && language === "mr-IN") {
+      selectedVoice = voices.find((voice) =>
+        voice.lang.toLowerCase().includes("hi"),
+      );
+    }
+
+    // English India fallback
+    if (!selectedVoice) {
+      selectedVoice = voices.find((voice) =>
+        voice.lang.toLowerCase().includes("en-in"),
+      );
+    }
+
+    // Any English fallback
+    if (!selectedVoice) {
+      selectedVoice = voices.find((voice) =>
+        voice.lang.toLowerCase().includes("en"),
+      );
+    }
+
+    // Final fallback
+    if (!selectedVoice) {
+      selectedVoice = voices[0];
+    }
+
+    return selectedVoice;
+  }, [voices, language]);
 
   const speak = useCallback(
     (text) => {
-      if (!text) return;
+      try {
+        if (!text || !text.trim()) return;
 
-      // Stop any ongoing speech
-      window.speechSynthesis.cancel();
+        setError(null);
 
-      const utterance = new SpeechSynthesisUtterance(text);
+        // Browser support check
+        if (!window.speechSynthesis) {
+          setError("Speech Synthesis not supported");
+          return;
+        }
 
-      // Map language codes to voices
-      const languageVoiceMap = {
-        "en-IN": "en-IN",
-        "hi-IN": "hi-IN",
-        "mr-IN": "mr-IN",
-      };
+        // Stop previous speech
+        window.speechSynthesis.cancel();
 
-      utterance.lang = languageVoiceMap[language] || "en-IN";
-      utterance.rate = 0.9;
-      utterance.pitch = 1;
-      utterance.volume = 1;
+        const utterance = new SpeechSynthesisUtterance(text);
 
-      utterance.onstart = () => {
-        setIsSpeaking(true);
-      };
+        const selectedVoice = getBestVoice();
 
-      utterance.onend = () => {
+        if (selectedVoice) {
+          utterance.voice = selectedVoice;
+          utterance.lang = selectedVoice.lang;
+        } else {
+          utterance.lang = language;
+        }
+
+        utterance.rate = 0.9;
+        utterance.pitch = 1;
+        utterance.volume = 1;
+
+        utterance.onstart = () => {
+          setIsSpeaking(true);
+        };
+
+        utterance.onend = () => {
+          setIsSpeaking(false);
+        };
+
+        utterance.onerror = (event) => {
+          console.error("Speech Synthesis Error:", event.error);
+
+          setError(`Speech failed: ${event.error}`);
+          setIsSpeaking(false);
+        };
+
+        window.speechSynthesis.speak(utterance);
+      } catch (err) {
+        console.error(err);
+
+        setError(err.message || "Speech synthesis failed");
         setIsSpeaking(false);
-      };
-
-      utterance.onerror = () => {
-        setIsSpeaking(false);
-      };
-
-      window.speechSynthesis.speak(utterance);
+      }
     },
-    [language],
+    [getBestVoice, language],
   );
 
   const stop = useCallback(() => {
@@ -53,6 +136,8 @@ const useSpeechSynthesis = () => {
     isSpeaking,
     language,
     setLanguage,
+    error,
+    voices,
   };
 };
 

@@ -1,141 +1,224 @@
 import axios from "axios";
 import { AI_CONFIG, API_ENDPOINTS } from "../../../config/env";
 
-// Create axios instance with configuration
+// =========================
+// AXIOS INSTANCE
+// =========================
+
 const aiClient = axios.create({
   baseURL: API_ENDPOINTS.CHAT.replace("/chat", ""),
-  timeout: AI_CONFIG.TIMEOUT,
+  timeout: AI_CONFIG.TIMEOUT || 30000,
+  headers: {
+    "Content-Type": "application/json",
+  },
 });
 
+// =========================
+// REQUEST INTERCEPTOR
+// =========================
+
+aiClient.interceptors.request.use(
+  (config) => {
+    console.log("[AI REQUEST]", config.method?.toUpperCase(), config.url);
+
+    return config;
+  },
+  (error) => {
+    console.error("[REQUEST ERROR]", error);
+    return Promise.reject(error);
+  },
+);
+
+// =========================
+// RESPONSE INTERCEPTOR
+// =========================
+
+aiClient.interceptors.response.use(
+  (response) => {
+    console.log("[AI RESPONSE]", response.data);
+    return response;
+  },
+  (error) => {
+    console.error("[AI RESPONSE ERROR]", error);
+    return Promise.reject(error);
+  },
+);
+
+// =========================
+// AI SERVICE
+// =========================
+
 const aiService = {
-  /**
-   * Send message to AI backend
-   * @param {string} message - User message
-   * @param {string} language - Language code (en|hi|mr)
-   * @returns {Promise} - AI response
-   */
+  // =========================
+  // SEND MESSAGE
+  // =========================
+
   sendMessage: async (message, language = "en") => {
     try {
+      // Validate message
       if (!message || !message.trim()) {
         throw new Error("Message cannot be empty");
       }
 
-      console.log("[AI Service] Sending message:", {
-        message,
+      const cleanedMessage = message.trim();
+
+      console.log("[AI] Sending:", cleanedMessage);
+
+      // API Request
+      const response = await aiClient.post("/chat", {
+        message: cleanedMessage,
         language,
-        endpoint: API_ENDPOINTS.CHAT,
       });
 
-      const response = await aiClient.post(
-        "/chat",
-        {
-          message: message.trim(),
-          language,
-        },
-        {
-          headers: {
-            "Content-Type": "application/json",
-          },
-        },
-      );
+      // Validate response
+      if (!response || !response.data) {
+        throw new Error("Empty response from AI");
+      }
 
-      console.log("[AI Service] Response received:", response.data);
-      return response.data;
+      const data = response.data;
+
+      console.log("[AI] Response:", data);
+
+      // Normalize backend response
+      return {
+        success: data.success ?? true,
+        reply: data.reply || data.response || data.message || "No AI response",
+        language: data.language || language,
+        error: data.error || null,
+      };
     } catch (error) {
-      console.error("[AI Service] Error:", error.message);
+      console.error("[AI SERVICE ERROR]", error);
 
-      // Handle different error types
-      if (error.response) {
-        // Server responded with error status
+      // Timeout
+      if (error.code === "ECONNABORTED") {
         throw {
-          message: error.response.data?.message || "Server error",
-          status: error.response.status,
-          data: error.response.data,
-        };
-      } else if (error.request) {
-        // Request made but no response
-        throw {
-          message: "No response from server. Is the backend running?",
-          type: "network_error",
-        };
-      } else {
-        // Request setup error
-        throw {
-          message: error.message,
-          type: "error",
+          type: "timeout",
+          message: "AI request timed out. Please try again.",
         };
       }
+
+      // Backend error
+      if (error.response) {
+        const status = error.response.status;
+
+        const backendMessage =
+          error.response.data?.message ||
+          error.response.data?.error ||
+          "Backend server error";
+
+        throw {
+          type: "server",
+          status,
+          message: backendMessage,
+        };
+      }
+
+      // No server response
+      if (error.request) {
+        throw {
+          type: "network",
+          message: "Cannot connect to backend server.",
+        };
+      }
+
+      // Unknown
+      throw {
+        type: "unknown",
+        message: error.message || "Unknown AI error",
+      };
     }
   },
 
-  /**
-   * Check if AI service is available
-   * @returns {Promise<boolean>}
-   */
+  // =========================
+  // HEALTH CHECK
+  // =========================
+
   healthCheck: async () => {
     try {
       const response = await aiClient.get("/health");
+
       return response.status === 200;
     } catch (error) {
-      console.error("[AI Service] Health check failed:", error.message);
+      console.error("[AI HEALTH CHECK FAILED]", error.message);
+
       return false;
     }
   },
 
-  /**
-   * Get available languages
-   * @returns {Promise<Array>}
-   */
+  // =========================
+  // AVAILABLE LANGUAGES
+  // =========================
+
   getAvailableLanguages: async () => {
     try {
       const response = await aiClient.get("/languages");
-      return response.data || [];
+
+      return response.data || ["en", "hi", "mr"];
     } catch (error) {
-      console.error("[AI Service] Failed to fetch languages:", error.message);
-      return ["en", "hi", "mr"]; // Fallback
+      console.error("[AI LANGUAGES ERROR]", error.message);
+
+      return ["en", "hi", "mr"];
     }
   },
 
-  /**
-   * Get system prompt for AI
-   * @returns {string}
-   */
-  getSystemPrompt: () => {
-    return `You are ScrapSavvy AI Voice Assistant. You help customers with:
-- Scrap pickup scheduling and booking
-- Recycling information and best practices
-- Pricing and quotes for scrap materials
-- Order tracking and status updates
-- General questions about our services
+  // =========================
+  // LANGUAGE OPTIONS
+  // =========================
 
-Guidelines:
-- Always be helpful, friendly, and professional
-- Support multiple languages (English, Hindi, Marathi)
-- Reply in the same language as the user
-- Keep responses concise and action-oriented
-- For scrap pickup: Ask location, what type of scrap, and preferred date/time
-- If you don't know something, suggest contacting customer support`;
-  },
-
-  /**
-   * Format language options for UI
-   * @returns {Array}
-   */
   getLanguageOptions: () => {
     return [
-      { code: "en", name: "English", locale: "en-IN", flag: "🇬🇧" },
-      { code: "hi", name: "हिंदी", locale: "hi-IN", flag: "🇮🇳" },
-      { code: "mr", name: "मराठी", locale: "mr-IN", flag: "🇮🇳" },
+      {
+        code: "en",
+        name: "English",
+        locale: "en-IN",
+        flag: "🇬🇧",
+      },
+      {
+        code: "hi",
+        name: "हिंदी",
+        locale: "hi-IN",
+        flag: "🇮🇳",
+      },
+      {
+        code: "mr",
+        name: "मराठी",
+        locale: "mr-IN",
+        flag: "🇮🇳",
+      },
     ];
   },
-  /**
-   * Log debug information
-   * @param {string} action - Action name
-   * @param {object} data - Data to log
-   */
+
+  // =========================
+  // SYSTEM PROMPT
+  // =========================
+
+  getSystemPrompt: () => {
+    return `
+You are ScrapSavvy AI Assistant.
+
+You help users with:
+- Scrap prices
+- Recycling information
+- Scrap pickup scheduling
+- Waste management
+- E-waste guidance
+
+Rules:
+- Keep responses short
+- Be friendly
+- Reply in same language
+- Use Indian pricing references
+- Focus on scrap and recycling
+`;
+  },
+
+  // =========================
+  // DEBUG LOGGER
+  // =========================
+
   log: (action, data) => {
     if (AI_CONFIG.DEBUG) {
-      console.log(`[AI Service] ${action}:`, data);
+      console.log(`[AI DEBUG] ${action}`, data);
     }
   },
 };
